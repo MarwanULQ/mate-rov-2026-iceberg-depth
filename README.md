@@ -9,7 +9,7 @@ The application supports:
 * freezing a frame and measuring the real-world distance between multiple point pairs
 * interactive undo / clear / reset controls
 
-![useless alt text](/test/3.png)
+![Measurement Example](tests/3.png)
 
 ---
 
