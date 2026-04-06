@@ -11,20 +11,6 @@ The application supports:
 
 ---
 
-## Repository Structure
-
-```text
-.
-├── build.sh
-├── install_prereqs.sh
-├── run_receiver.sh
-├── recording.mp4
-├── SN31223474.conf
-└── src/iceberg_depth/
-```
-
----
-
 ## Installation
 
 First make the scripts executable:
@@ -99,6 +85,7 @@ Requirements:
 
 * the video must be side-by-side stereo
 * the video path must match the location of the file (put the video in the repo's root and rename it to 'recording')
+* [prerecorded videos can be found here](https://drive.google.com/drive/u/1/folders/1ywYO08Prxha8mJFXOx24Lt_mlt3WUB-b)
 
 ---
 
