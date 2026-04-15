@@ -279,4 +279,3 @@ The saved tuning file is automatically reused by the measurement application. Th
 - No point cloud is generated.
 - Distances are computed directly from the stereo depth map.
 - If the image appears zoomed when using underwater calibration, the calibration maps and input video resolution do not match.
-````
