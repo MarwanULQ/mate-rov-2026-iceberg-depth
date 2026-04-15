@@ -21,6 +21,7 @@
 // ----> Includes
 #include <algorithm>
 #include <cmath>
+#include <exception>
 #include <iomanip>
 #include <iostream>
 #include <limits>
@@ -31,19 +32,159 @@
 #include <opencv2/opencv.hpp>
 
 #include "calibration.hpp"
+#include "cnpy.h"
 #include "stereo.hpp"
 // <---- Includes
 
+// INPUT SOURCE
 #define USE_LOCAL_VIDEO
 // #define USE_GSTREAMER_STREAM
+// #define USE_LIVE_ZED_CAMERA
 
-#if defined(USE_LOCAL_VIDEO) && defined(USE_GSTREAMER_STREAM)
-#error "Enable only one input mode: USE_LOCAL_VIDEO or USE_GSTREAMER_STREAM"
+// CALIBRATION SOURCE
+// #define USE_SN_CONF_CALIBRATION
+#define USE_UNDERWATER_NPY_CALIBRATION
+
+#if (defined(USE_LOCAL_VIDEO) + defined(USE_GSTREAMER_STREAM) + defined(USE_LIVE_ZED_CAMERA)) != 1
+#error "Enable exactly one input mode: USE_LOCAL_VIDEO, USE_GSTREAMER_STREAM, or USE_LIVE_ZED_CAMERA"
 #endif
 
-#if !defined(USE_LOCAL_VIDEO) && !defined(USE_GSTREAMER_STREAM)
-#error "Enable one input mode: USE_LOCAL_VIDEO or USE_GSTREAMER_STREAM"
+#ifdef USE_LIVE_ZED_CAMERA
+#include "videocapture.hpp"
 #endif
+
+#if defined(USE_SN_CONF_CALIBRATION) && defined(USE_UNDERWATER_NPY_CALIBRATION)
+#error "Enable only one calibration mode: USE_SN_CONF_CALIBRATION or USE_UNDERWATER_NPY_CALIBRATION"
+#endif
+
+#if !defined(USE_SN_CONF_CALIBRATION) && !defined(USE_UNDERWATER_NPY_CALIBRATION)
+#error "Enable one calibration mode: USE_SN_CONF_CALIBRATION or USE_UNDERWATER_NPY_CALIBRATION"
+#endif
+
+bool loadUnderwaterCalibration(
+    const std::string& calibDir,
+    cv::Mat& cameraMatrix_left,
+    cv::Mat& cameraMatrix_right,
+    cv::Mat& distCoeffs_left,
+    cv::Mat& distCoeffs_right,
+    cv::Mat& map_left_x,
+    cv::Mat& map_left_y,
+    cv::Mat& map_right_x,
+    cv::Mat& map_right_y,
+    double& fx,
+    double& fy,
+    double& cx,
+    double& cy,
+    double& baseline)
+{
+    try
+    {
+        cnpy::NpyArray kLeftNpy = cnpy::npy_load(calibDir + "/K_left.npy");
+        cnpy::NpyArray kRightNpy = cnpy::npy_load(calibDir + "/K_right.npy");
+        if (kLeftNpy.shape.size() != 2 || kRightNpy.shape.size() != 2 ||
+            kLeftNpy.shape[0] != 3 || kLeftNpy.shape[1] != 3 ||
+            kRightNpy.shape[0] != 3 || kRightNpy.shape[1] != 3)
+        {
+            std::cerr << "Invalid K matrix shapes in " << calibDir << std::endl;
+            return false;
+        }
+
+        cameraMatrix_left = cv::Mat(3, 3, CV_64F, kLeftNpy.data<double>()).clone();
+        cameraMatrix_right = cv::Mat(3, 3, CV_64F, kRightNpy.data<double>()).clone();
+
+        cnpy::NpyArray distLeftNpy = cnpy::npy_load(calibDir + "/dist_left.npy");
+        cnpy::NpyArray distRightNpy = cnpy::npy_load(calibDir + "/dist_right.npy");
+        const size_t distLeftCount = distLeftNpy.num_vals;
+        const size_t distRightCount = distRightNpy.num_vals;
+        if (distLeftCount < 5 || distRightCount < 5)
+        {
+            std::cerr << "Invalid distortion array size in " << calibDir << std::endl;
+            return false;
+        }
+
+        distCoeffs_left = cv::Mat(1, 5, CV_64F, distLeftNpy.data<double>()).clone();
+        distCoeffs_right = cv::Mat(1, 5, CV_64F, distRightNpy.data<double>()).clone();
+
+        cnpy::NpyArray tNpy = cnpy::npy_load(calibDir + "/T.npy");
+        if (tNpy.num_vals < 3)
+        {
+            std::cerr << "Invalid T array size in " << calibDir << std::endl;
+            return false;
+        }
+
+        cv::Mat T = cv::Mat(3, 1, CV_64F, tNpy.data<double>()).clone();
+        baseline = std::abs(T.at<double>(0, 0));
+        if (baseline < 1.0)
+        {
+            baseline *= 1000.0;
+        }
+
+        fx = cameraMatrix_left.at<double>(0, 0);
+        fy = cameraMatrix_left.at<double>(1, 1);
+        cx = cameraMatrix_left.at<double>(0, 2);
+        cy = cameraMatrix_left.at<double>(1, 2);
+
+        cnpy::NpyArray lm1 = cnpy::npy_load(calibDir + "/left_map1.npy");
+        cnpy::NpyArray lm2 = cnpy::npy_load(calibDir + "/left_map2.npy");
+        cnpy::NpyArray rm1 = cnpy::npy_load(calibDir + "/right_map1.npy");
+        cnpy::NpyArray rm2 = cnpy::npy_load(calibDir + "/right_map2.npy");
+
+        // Preferred format: CV_32FC1 maps saved as 2D float arrays.
+        if (lm1.shape.size() == 2 && lm2.shape.size() == 2 && rm1.shape.size() == 2 && rm2.shape.size() == 2)
+        {
+            const int rows = static_cast<int>(lm1.shape[0]);
+            const int cols = static_cast<int>(lm1.shape[1]);
+            const bool sameShape =
+                lm2.shape[0] == lm1.shape[0] && lm2.shape[1] == lm1.shape[1] &&
+                rm1.shape[0] == lm1.shape[0] && rm1.shape[1] == lm1.shape[1] &&
+                rm2.shape[0] == lm1.shape[0] && rm2.shape[1] == lm1.shape[1];
+            if (!sameShape)
+            {
+                std::cerr << "Rectification map sizes do not match" << std::endl;
+                return false;
+            }
+
+            map_left_x = cv::Mat(rows, cols, CV_32F, lm1.data<float>()).clone();
+            map_left_y = cv::Mat(rows, cols, CV_32F, lm2.data<float>()).clone();
+            map_right_x = cv::Mat(rows, cols, CV_32F, rm1.data<float>()).clone();
+            map_right_y = cv::Mat(rows, cols, CV_32F, rm2.data<float>()).clone();
+            return true;
+        }
+
+        // Compatibility format: CV_16SC2 + CV_16UC1 map pair as saved by OpenCV.
+        if (lm1.shape.size() == 3 && rm1.shape.size() == 3 &&
+            lm2.shape.size() == 2 && rm2.shape.size() == 2 &&
+            lm1.shape[2] == 2 && rm1.shape[2] == 2)
+        {
+            const bool sameRowsCols =
+                lm2.shape[0] == lm1.shape[0] && lm2.shape[1] == lm1.shape[1] &&
+                rm1.shape[0] == lm1.shape[0] && rm1.shape[1] == lm1.shape[1] &&
+                rm2.shape[0] == lm1.shape[0] && rm2.shape[1] == lm1.shape[1];
+            if (!sameRowsCols)
+            {
+                std::cerr << "Rectification map sizes do not match" << std::endl;
+                return false;
+            }
+
+            const int rows = static_cast<int>(lm1.shape[0]);
+            const int cols = static_cast<int>(lm1.shape[1]);
+            map_left_x = cv::Mat(rows, cols, CV_16SC2, lm1.data<short>()).clone();
+            map_left_y = cv::Mat(rows, cols, CV_16UC1, lm2.data<unsigned short>()).clone();
+            map_right_x = cv::Mat(rows, cols, CV_16SC2, rm1.data<short>()).clone();
+            map_right_y = cv::Mat(rows, cols, CV_16UC1, rm2.data<unsigned short>()).clone();
+            return true;
+        }
+
+        std::cerr << "Unsupported rectification map layout in " << calibDir << std::endl;
+        return false;
+
+    }
+    catch (const std::exception& e)
+    {
+        std::cerr << "Error loading underwater calibration from '" << calibDir << "': " << e.what() << std::endl;
+        return false;
+    }
+}
 
 struct Measurement
 {
@@ -76,10 +217,34 @@ struct AppState
     std::string statusMessage;
 };
 
-bool getStereoFrame(cv::VideoCapture& cap, cv::Mat& sideBySideFrame)
+#ifdef USE_LIVE_ZED_CAMERA
+sl_oc::video::VideoCapture* g_zedCapPtr = nullptr;
+#else
+cv::VideoCapture* g_videoCapPtr = nullptr;
+#endif
+
+bool getStereoFrame(cv::Mat& sideBySideFrame)
 {
+#ifdef USE_LIVE_ZED_CAMERA
+    if (!g_zedCapPtr)
+        return false;
+
+    const sl_oc::video::Frame frame = g_zedCapPtr->getLastFrame();
+    if (!frame.data)
+        return false;
+
+    // ZED camera provides frames in YUYV format
+    cv::Mat frameYUV(frame.height, frame.width, CV_8UC2, frame.data);
+    cv::Mat frameBGR;
+    cv::cvtColor(frameYUV, frameBGR, cv::COLOR_YUV2BGR_YUYV);
+    sideBySideFrame = frameBGR;
+    return true;
+#else
+    if (!g_videoCapPtr)
+        return false;
+
     cv::Mat frame;
-    if (!cap.read(frame) || frame.empty())
+    if (!g_videoCapPtr->read(frame) || frame.empty())
     {
         return false;
     }
@@ -98,6 +263,7 @@ bool getStereoFrame(cv::VideoCapture& cap, cv::Mat& sideBySideFrame)
     }
 
     return true;
+#endif
 }
 
 float sampleDepthNeighborhood(const cv::Mat& depthMap, int x, int y)
@@ -327,11 +493,15 @@ int main(int argc, char* argv[])
     (void)argc;
     (void)argv;
 
-    const std::string calibrationFile = "SN31223474.conf";
-
 #ifdef USE_LOCAL_VIDEO
     const std::string localVideoPath = "recording.mp4";
     cv::VideoCapture cap(localVideoPath);
+    g_videoCapPtr = &cap;
+    if (!cap.isOpened())
+    {
+        std::cerr << "Cannot open input source" << std::endl;
+        return EXIT_FAILURE;
+    }
 #endif
 
 #ifdef USE_GSTREAMER_STREAM
@@ -339,16 +509,32 @@ int main(int argc, char* argv[])
         "rtspsrc location=rtsp://192.168.1.100:8554/videofeed latency=0 buffer-mode=auto "
         "! decodebin ! videoconvert ! appsink max-buffers=1 drop=True";
     cv::VideoCapture cap(gstPipeline, cv::CAP_GSTREAMER);
-#endif
-
+    g_videoCapPtr = &cap;
     if (!cap.isOpened())
     {
         std::cerr << "Cannot open input source" << std::endl;
         return EXIT_FAILURE;
     }
+#endif
+
+#ifdef USE_LIVE_ZED_CAMERA
+    sl_oc::video::VideoParams params;
+    params.res = sl_oc::video::RESOLUTION::HD720;
+    params.fps = sl_oc::video::FPS::FPS_30;
+    params.verbose = sl_oc::VERBOSITY::INFO;
+
+    sl_oc::video::VideoCapture zed(params);
+    g_zedCapPtr = &zed;
+
+    if (!zed.initializeVideo(-1))
+    {
+        std::cerr << "Cannot open ZED camera" << std::endl;
+        return EXIT_FAILURE;
+    }
+#endif
 
     cv::Mat sideBySideFrame;
-    if (!getStereoFrame(cap, sideBySideFrame))
+    if (!getStereoFrame(sideBySideFrame))
     {
         std::cerr << "Cannot read first frame from input source" << std::endl;
         return EXIT_FAILURE;
@@ -360,31 +546,93 @@ int main(int argc, char* argv[])
         return EXIT_FAILURE;
     }
 
+    // Verify frame size for live ZED camera
+#ifdef USE_LIVE_ZED_CAMERA
+    std::cout << "Camera frame size: " << sideBySideFrame.cols << " x " << sideBySideFrame.rows << std::endl;
+    if (sideBySideFrame.cols != 2560 || sideBySideFrame.rows != 720)
+    {
+        std::cerr << "Unexpected camera resolution. Underwater calibration requires 2560x720 side-by-side." << std::endl;
+        return EXIT_FAILURE;
+    }
+#endif
+
     const int leftWidth = sideBySideFrame.cols / 2;
     const int frameHeight = sideBySideFrame.rows;
+    const cv::Size resolution(leftWidth, frameHeight);
 
-    cv::Mat mapLeftX, mapLeftY, mapRightX, mapRightY;
-    cv::Mat cameraMatrixLeft, cameraMatrixRight;
+    cv::Mat cameraMatrix_left, cameraMatrix_right;
+    cv::Mat distCoeffs_left, distCoeffs_right;
+    cv::Mat map_left_x, map_left_y;
+    cv::Mat map_right_x, map_right_y;
+
+    double fx = 0.0;
+    double fy = 0.0;
+    double cx = 0.0;
+    double cy = 0.0;
     double baseline = 0.0;
-    sl_oc::tools::initCalibration(calibrationFile,
-                                  cv::Size(leftWidth, frameHeight),
-                                  mapLeftX,
-                                  mapLeftY,
-                                  mapRightX,
-                                  mapRightY,
-                                  cameraMatrixLeft,
-                                  cameraMatrixRight,
-                                  &baseline);
+
+#ifdef USE_SN_CONF_CALIBRATION
+    #ifdef USE_LIVE_ZED_CAMERA
+    // For live ZED camera, only use local calibration file (no download)
+    #endif
+    const std::string calibration_file = "SN31223474.conf";
+    if (!sl_oc::tools::initCalibration(calibration_file,
+                                       resolution,
+                                       map_left_x,
+                                       map_left_y,
+                                       map_right_x,
+                                       map_right_y,
+                                       cameraMatrix_left,
+                                       cameraMatrix_right,
+                                       &baseline))
+    {
+        std::cerr << "Failed to load SN.conf calibration" << std::endl;
+        return EXIT_FAILURE;
+    }
+
+    fx = cameraMatrix_left.at<double>(0, 0);
+    fy = cameraMatrix_left.at<double>(1, 1);
+    cx = cameraMatrix_left.at<double>(0, 2);
+    cy = cameraMatrix_left.at<double>(1, 2);
+    baseline = std::abs(baseline);
+#endif
+
+#ifdef USE_UNDERWATER_NPY_CALIBRATION
+    const std::string calibDir = "underwater_calibration";
+    if (!loadUnderwaterCalibration(calibDir,
+                                   cameraMatrix_left,
+                                   cameraMatrix_right,
+                                   distCoeffs_left,
+                                   distCoeffs_right,
+                                   map_left_x,
+                                   map_left_y,
+                                   map_right_x,
+                                   map_right_y,
+                                   fx,
+                                   fy,
+                                   cx,
+                                   cy,
+                                   baseline))
+    {
+        std::cerr << "Failed to load underwater .npy calibration" << std::endl;
+        return EXIT_FAILURE;
+    }
+#endif
 
     AppState state;
-    state.fx = cameraMatrixLeft.at<double>(0, 0);
-    state.fy = cameraMatrixLeft.at<double>(1, 1);
-    state.cx = cameraMatrixLeft.at<double>(0, 2);
-    state.cy = cameraMatrixLeft.at<double>(1, 2);
+    state.fx = fx;
+    state.fy = fy;
+    state.cx = cx;
+    state.cy = cy;
     state.statusMessage = "Live mode ready";
 
-    std::cout << "Camera Matrix L:\n" << cameraMatrixLeft << std::endl;
-    std::cout << "Camera Matrix R:\n" << cameraMatrixRight << std::endl;
+    std::cout << "Camera Matrix L:\n" << cameraMatrix_left << std::endl;
+    std::cout << "Camera Matrix R:\n" << cameraMatrix_right << std::endl;
+    std::cout << "fx: " << fx << std::endl;
+    std::cout << "fy: " << fy << std::endl;
+    std::cout << "cx: " << cx << std::endl;
+    std::cout << "cy: " << cy << std::endl;
+    std::cout << "baseline: " << baseline << std::endl;
     std::cout << "Baseline: " << baseline << " mm" << std::endl;
 
     sl_oc::tools::StereoSgbmPar stereoPar;
@@ -428,7 +676,7 @@ int main(int argc, char* argv[])
         {
             if (!useBufferedFrame)
             {
-                if (!getStereoFrame(cap, sideBySideFrame))
+                if (!getStereoFrame(sideBySideFrame))
                 {
                     state.statusMessage = "Input ended or frame read failed";
                     running = false;
@@ -447,8 +695,8 @@ int main(int argc, char* argv[])
             leftRaw = sideBySideFrame(cv::Rect(0, 0, sideBySideFrame.cols / 2, sideBySideFrame.rows));
             rightRaw = sideBySideFrame(cv::Rect(sideBySideFrame.cols / 2, 0, sideBySideFrame.cols / 2, sideBySideFrame.rows));
 
-            cv::remap(leftRaw, leftRect, mapLeftX, mapLeftY, cv::INTER_AREA);
-            cv::remap(rightRaw, rightRect, mapRightX, mapRightY, cv::INTER_AREA);
+            cv::remap(leftRaw, leftRect, map_left_x, map_left_y, cv::INTER_AREA);
+            cv::remap(rightRaw, rightRect, map_right_x, map_right_y, cv::INTER_AREA);
 
             if (!computeDepthMap(leftRect, rightRect, leftMatcher, state.fx, baseline, depthMap))
             {
@@ -520,7 +768,11 @@ int main(int argc, char* argv[])
         }
     }
 
+#ifdef USE_LIVE_ZED_CAMERA
+    // ZED camera cleanup is handled automatically
+#else
     cap.release();
+#endif
     cv::destroyAllWindows();
     return EXIT_SUCCESS;
 }

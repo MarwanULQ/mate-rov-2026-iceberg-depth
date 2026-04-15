@@ -138,6 +138,16 @@ endif()
 add_library(${PROJECT_NAME} SHARED ${SRC_FULL} )
 target_link_libraries( ${PROJECT_NAME}  ${DEP_LIBS})
 
+add_library(cnpy
+    src/third_party/cnpy/cnpy.cpp
+)
+
+target_include_directories(cnpy PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/third_party/cnpy
+)
+
+target_link_libraries(cnpy z)
+
 ############################################################################
 # Install rules
 set_target_properties(${PROJECT_NAME} PROPERTIES
@@ -168,6 +178,7 @@ if(BUILD_EXAMPLES)
         target_link_libraries(${MEASURE_DISTANCE_EXAMPLE}
             ${PROJECT_NAME}
             ${OpenCV_LIBS}
+            cnpy
         )
         install(TARGETS ${MEASURE_DISTANCE_EXAMPLE}
             RUNTIME DESTINATION ${CMAKE_INSTALL_PREFIX}/bin

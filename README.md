@@ -4,12 +4,20 @@ Stereo distance measurement tool built on top of the Stereolabs Open Capture API
 
 The application supports:
 
-* prerecorded side-by-side stereo video files (`.mp4`)
-* RTSP / GStreamer stereo streams
-* freezing a frame and measuring the real-world distance between multiple point pairs
-* interactive undo / clear / reset controls
+- prerecorded side-by-side stereo video files (`.mp4`)
+- RTSP / GStreamer stereo streams
+- directly connected ZED cameras
+- factory `SNxxxx.conf` calibration
+- custom underwater calibration from `.npy` files
+- freezing a frame and measuring the real-world distance between multiple point pairs
+- interactive undo / clear / reset controls
 
-![Measurement Example](tests/3.png)
+### Example with Factory Calibration:
+![Measurement Example](tests/normal_cal3.png)
+
+### Example with underwater_calibration:
+![Measurement Example](tests/water_cal1.png)
+![Measurement Example](tests/water_cal2.png)
 
 ---
 
@@ -33,19 +41,13 @@ Then install all required dependencies:
 
 ## Build
 
-Build the project with:
-
 ```bash
 ./build.sh
 ```
 
-The build script configures CMake and compiles the measurement executable.
-
 ---
 
 ## Run
-
-Run the receiver with:
 
 ```bash
 ./run_receiver.sh
@@ -53,61 +55,43 @@ Run the receiver with:
 
 ---
 
-## Input Source Selection
+## Source Selection
 
-The application can operate in one of two modes:
-
-1. Local prerecorded stereo video
-2. RTSP / GStreamer stereo stream
-
-The mode is selected in:
+Input source and calibration source are selected in:
 
 ```text
 src/iceberg_depth/examples/measure_distance_v1.cpp
 ```
 
-using compile-time `#define` directives.
+by changing the `#define` block at the top of the file.
 
-### Local Video Mode
+### Input Source
 
-Enable:
+Enable exactly one:
 
 ```cpp
 #define USE_LOCAL_VIDEO
 // #define USE_GSTREAMER_STREAM
+// #define USE_LIVE_ZED_CAMERA
 ```
 
-When enabled, the program loads a local side-by-side stereo recording:
-
-```cpp
-const std::string localVideoPath = "recording.mp4";
-```
-
-Requirements:
-
-* the video must be side-by-side stereo
-* the video path must match the location of the file (put the video in the repo's root and rename it to 'recording')
-* [prerecorded videos can be found here](https://drive.google.com/drive/u/1/folders/1ywYO08Prxha8mJFXOx24Lt_mlt3WUB-b)
-
----
-
-### RTSP / GStreamer Mode
-
-Enable:
+or:
 
 ```cpp
 // #define USE_LOCAL_VIDEO
 #define USE_GSTREAMER_STREAM
+// #define USE_LIVE_ZED_CAMERA
 ```
 
-Then edit the RTSP pipeline in the same source file:
+or:
 
 ```cpp
-const std::string pipeline =
-    "rtspsrc location=rtsp://<ip>:<port>/videofeed ! decodebin ! videoconvert ! appsink";
+// #define USE_LOCAL_VIDEO
+// #define USE_GSTREAMER_STREAM
+#define USE_LIVE_ZED_CAMERA
 ```
 
-After changing the define or RTSP URL, rebuild the project:
+After changing the source, rebuild:
 
 ```bash
 ./build.sh
@@ -115,68 +99,184 @@ After changing the define or RTSP URL, rebuild the project:
 
 ---
 
-## Calibration File
+## Calibration Selection
 
-The file:
+Enable exactly one:
+
+```cpp
+#define USE_SN_CONF_CALIBRATION
+// #define USE_UNDERWATER_NPY_CALIBRATION
+```
+
+or:
+
+```cpp
+// #define USE_SN_CONF_CALIBRATION
+#define USE_UNDERWATER_NPY_CALIBRATION
+```
+
+---
+
+## Local Video Mode
+
+```cpp
+#define USE_LOCAL_VIDEO
+```
+
+The program loads:
+
+```cpp
+const std::string localVideoPath = "recording.mp4";
+```
+
+Requirements:
+
+- the file must exist in the repository root
+- the file must contain a side-by-side stereo recording
+- expected size: `2560x720`
+- left image = left half
+- right image = right half
+
+---
+
+## RTSP / GStreamer Mode
+
+```cpp
+#define USE_GSTREAMER_STREAM
+```
+
+Edit the pipeline in `measure_distance_v1.cpp`:
+
+```cpp
+const std::string gstPipeline =
+    "rtspsrc location=rtsp://<ip>:<port>/videofeed latency=0 "
+    "! decodebin ! videoconvert ! appsink";
+```
+
+Then rebuild.
+
+---
+
+## Live ZED Camera Mode
+
+```cpp
+#define USE_LIVE_ZED_CAMERA
+```
+
+The application opens the first connected ZED camera using:
+
+```cpp
+sl_oc::video::VideoCapture
+```
+
+The camera is forced to:
+
+```text
+2560 x 720 side-by-side
+```
+
+using:
+
+```cpp
+params.res = sl_oc::video::RESOLUTION::HD720;
+```
+
+If the connected camera does not provide a `2560x720` frame, the application exits.
+
+The application does not automatically download calibration files.
+You must already have:
 
 ```text
 SN31223474.conf
 ```
 
+in the repository root when using `USE_SN_CONF_CALIBRATION`.
+
+---
+
+## Underwater Calibration
+
+The underwater calibration files must exist in:
+
+```text
+underwater_calibration/
+```
+
+Required files:
+
+```text
+K_left.npy
+K_right.npy
+dist_left.npy
+dist_right.npy
+T.npy
+left_map1.npy
+left_map2.npy
+right_map1.npy
+right_map2.npy
+```
+
+The underwater calibration was generated for:
+
+```text
+2560 x 720 side-by-side
+1280 x 720 per eye
+```
+
+Therefore the input source must match this resolution.
+
 ---
 
 ## Stereo Parameter Tuning
 
-The repository includes a StereoSGBM tuning tool that provides a gui to tune the disparity map generated:
+The repository includes a StereoSGBM tuning tool:
 
 ```text
 src/iceberg_depth/examples/tools/zed_oc_tune_stereo_sgbm.cpp
 ```
 
-Run the tuning executable from the build directory:
+After building:
 
 ```bash
 cd src/iceberg_depth/build
 ./zed_open_capture_depth_tune_stereo
 ```
 
-Adjust the StereoSGBM parameters, then save them.
+The saved tuning file is automatically reused by the measurement application. The parameter file is usually stored in:
 
-The measurement application automatically loads the saved stereo parameters file on startup.
-
-It works by capturing the first frame and providing a gui over it with controls. (can't be used with local video because it works on the first frame captured)
+```text
+~/zed/settings/zed_oc_stereo.yaml
+```
 
 ---
 
 ## Measurement Workflow
 
 1. Start the application
-2. Wait until the live video appears
-3. Press `SPACE` to freeze the current frame
-4. Click two points to create one measurement
-5. Repeat to create additional measurements
-
-Each pair of points is connected by a thin line and the measured distance is displayed above the line.
+2. Wait for the live image
+3. Press `SPACE`
+4. Click two points
+5. The points are connected and the distance is displayed
+6. Repeat for additional measurements
 
 ---
 
 ## Controls
 
-| Key              | Action                             |
-| ---------------- | ---------------------------------- |
-| `SPACE`          | Freeze the current frame           |
-| Left click twice | Create one distance measurement    |
-| `U`              | Undo the last point or measurement |
-| `C`              | Clear all measurements             |
-| `R`              | Return to live mode                |
-| `Q`              | Quit the application               |
+| Key | Action |
+|---|---|
+| `SPACE` | Freeze current frame |
+| Left click twice | Create a measurement |
+| `U` | Undo last point or measurement |
+| `C` | Clear all measurements |
+| `R` | Return to live mode |
+| `Q` | Quit |
 
 ---
 
 ## Notes
 
-* The application does not generate a point cloud.
-* Distance is computed directly from the stereo depth map.
-* Measurements are more stable when StereoSGBM has been tuned first.
-
----
+- No point cloud is generated.
+- Distances are computed directly from the stereo depth map.
+- If the image appears zoomed when using underwater calibration, the calibration maps and input video resolution do not match.
+````
