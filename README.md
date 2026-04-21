@@ -17,12 +17,6 @@ The application supports:
 - freezing a frame and measuring the real-world distance between multiple point pairs
 - interactive undo / clear / reset controls
 
-### Example with Factory Calibration:
-![Measurement Example](tests/normal_cal3.png)
-
-### Example with underwater_calibration:
-![Measurement Example](tests/water_cal2.png)
-
 ### Example of measure_distance_v3 (SGBM)
 ![Measurement Example](tests/v3_distance.png) ![Measurement Example](tests/v3_disparity.png)
 
