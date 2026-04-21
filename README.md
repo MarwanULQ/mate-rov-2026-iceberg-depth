@@ -58,6 +58,7 @@ Place your TorchScript model there, for example:
 ```text
 exports/stereoanywhere2_torchscript.pt
 ```
+you can find models in [here](https://drive.google.com/drive/folders/1dBQjLkgS8LAILNkJQu6Z3ObolR8X9wC1)
 
 By default, v4 reads `exports/stereoanywhere2_torchscript.pt`.
 
