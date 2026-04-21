@@ -21,7 +21,7 @@ The application supports:
 ![Measurement Example](tests/v3_distance.png) ![Measurement Example](tests/v3_disparity.png)
 
 ### Example of measure_distance_v4 (StereoAnywhere)
-![Measurement Example](tests/v4_distance.png) ![Measurement Example](tests/v4_disparity.png)
+![Measurement Example](tests/v4_distance.png) ![Measurement Example](tests/v4_disparity.png) ![Measurement Example](tests/v4_depthmap.png)
 ---
 
 ## Setup
