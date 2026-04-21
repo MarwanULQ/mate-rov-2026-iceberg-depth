@@ -76,6 +76,12 @@ or by command line argument:
 
 ### 3) Download LibTorch and place it in the repository
 
+Create the lib directory in the repository root:
+
+```bash
+mkdir -p third_party
+```
+
 Download LibTorch from the official PyTorch site (CPU or CUDA package matching your machine), then extract it to:
 
 ```text
@@ -94,7 +100,7 @@ CMake auto-detects this path. You can also override manually:
 export LIBTORCH_ROOT=/absolute/path/to/libtorch
 ```
 
-### 4) Optional environment overrides (no hardcoded absolute paths required)
+### 4) Optional environment overrides
 
 These overrides apply to both v3 and v4 where relevant.
 
