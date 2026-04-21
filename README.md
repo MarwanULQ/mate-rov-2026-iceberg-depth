@@ -4,7 +4,7 @@ Stereo distance measurement tool built on top of the Stereolabs Open Capture API
 
 This repository publishes two supported measurement apps:
 
-- `measure_distance_v3`: OpenCV stereo pipeline (WLS + pause-to-compute workflow)
+- `measure_distance_v3`: OpenCV stereo pipeline (CLAHE + SGBM + WLS + pause-to-compute workflow)
 - `measure_distance_v4`: TorchScript stereo pipeline (pause-to-compute workflow)
 
 The application supports:
@@ -21,9 +21,13 @@ The application supports:
 ![Measurement Example](tests/normal_cal3.png)
 
 ### Example with underwater_calibration:
-![Measurement Example](tests/water_cal1.png)
 ![Measurement Example](tests/water_cal2.png)
 
+### Example of measure_distance_v3 (SGBM)
+![Measurement Example](tests/v3_distance.png) ![Measurement Example](tests/v3_disparity.png)
+
+### Example of measure_distance_v4 (StereoAnywhere)
+![Measurement Example](tests/v4_distance.png) ![Measurement Example](tests/v4_disparity.png)
 ---
 
 ## Setup
@@ -37,7 +41,8 @@ First make the scripts executable:
 ```bash
 chmod +x install_prereqs.sh
 chmod +x build.sh
-chmod +x run_receiver.sh
+chmod +x run_normal.sh
+chmod +x run_model.sh
 ```
 
 Then install all required dependencies:
@@ -110,7 +115,7 @@ These overrides apply to both v3 and v4 where relevant.
 ## Build
 
 ```bash
-./build.sh
+sudo ./build.sh
 ```
 
 By default this repository now builds only:
@@ -126,7 +131,7 @@ Example:
 
 ```bash
 export LIBTORCH_ROOT=/opt/libtorch
-./build.sh
+sudo ./build.sh
 ```
 
 If `third_party/libtorch` exists in the repository, `build.sh` and CMake will use it automatically.
@@ -143,32 +148,16 @@ If v4 does not appear, clear the CMake cache and rebuild.
 
 ## Run
 
-```bash
-./run_receiver.sh
-```
-
 To run v3:
 
 ```bash
-./src/iceberg_depth/build/zed_open_capture_measure_distance_v3
+./run_normal.sh
 ```
 
 To run v4:
 
 ```bash
-./src/iceberg_depth/build/zed_open_capture_measure_distance_v4
-```
-
-Optional model argument:
-
-```bash
-./src/iceberg_depth/build/zed_open_capture_measure_distance_v4 exports/stereoanywhere2_torchscript.pt
-```
-
-Optional runtime device selection:
-
-```bash
-STEREOANYWHERE_TORCH_DEVICE=cuda ./src/iceberg_depth/build/zed_open_capture_measure_distance_v4
+./run_model.sh
 ```
 
 ---
@@ -195,7 +184,7 @@ For v4 model path default, edit:
 src/iceberg_depth/examples/measure_distance_v4.cpp
 ```
 
-and update `DEFAULT_MODEL_CONFIG_PATH`, or pass model path using CLI/env (recommended for release).
+and update `DEFAULT_MODEL_CONFIG_PATH`, or pass model path using CLI/env.
 
 ### Input Source
 
@@ -226,7 +215,7 @@ or:
 After changing the source, rebuild:
 
 ```bash
-./build.sh
+sudo ./build.sh
 ```
 
 ---
@@ -251,19 +240,8 @@ or:
 
 ## Local Video Mode
 
-```cpp
-#define USE_LOCAL_VIDEO
-```
-
-The program loads:
-
-```cpp
-const std::string localVideoPath = "recording.mp4";
-```
-
 Requirements:
 
-- the file must exist in the repository root
 - the file must contain a side-by-side stereo recording
 - expected size: `2560x720`
 - left image = left half
@@ -273,17 +251,12 @@ Requirements:
 
 ## RTSP / GStreamer Mode
 
-```cpp
-#define USE_GSTREAMER_STREAM
-```
+Requirements:
 
-Edit the pipeline in `measure_distance_v3.cpp` or `measure_distance_v4.cpp`:
-
-```cpp
-const std::string gstPipeline =
-    "rtspsrc location=rtsp://<ip>:<port>/videofeed latency=0 "
-    "! decodebin ! videoconvert ! appsink";
-```
+- the file must contain a side-by-side stereo stream
+- expected size: `2560x720`
+- left image = left half
+- right image = right half
 
 Then rebuild.
 
@@ -388,7 +361,7 @@ Both v3 and v4 use the same interaction flow (live preview, compute on `SPACE`, 
 Main differences:
 
 - Backend:
-    - v3 uses OpenCV StereoSGBM + WLS.
+    - v3 uses OpenCV CLAHE + StereoSGBM + WLS.
     - v4 uses TorchScript model inference.
 
 - Dependency profile:
