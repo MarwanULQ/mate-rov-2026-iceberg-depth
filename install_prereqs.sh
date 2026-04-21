@@ -7,6 +7,7 @@ set -e
 # - RTSP / GStreamer mode
 # - live ZED camera mode
 # - underwater .npy calibration loading
+# - TorchScript model inference support for measure_distance_v2 (manual LibTorch install required)
 
 sudo apt-get update
 
@@ -20,6 +21,7 @@ sudo apt-get install -y \
     libhidapi-dev \
     libopencv-dev \
     libopencv-viz-dev \
+    nlohmann-json3-dev \
     gstreamer1.0-tools \
     gstreamer1.0-libav \
     gstreamer1.0-plugins-base \

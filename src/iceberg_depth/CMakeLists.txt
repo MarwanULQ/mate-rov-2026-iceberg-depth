@@ -55,6 +55,22 @@ option(BUILD_VIDEO      "Build the ZED Open Capture Video Modules (only for Linu
 option(BUILD_SENSORS    "Build the ZED Open Capture Sensors Modules"                  ON)
 option(BUILD_EXAMPLES   "Build the ZED Open Capture examples"                         ON)
 option(DEBUG_CAM_REG    "Add functions to log the values of the registers of camera"  OFF)
+option(BUILD_TORCH_EXAMPLE "Build the TorchScript measurement example (measure_distance_v4)" ON)
+set(LIBTORCH_ROOT "" CACHE PATH "Path to a local LibTorch installation root")
+
+set(DEFAULT_LIBTORCH_ROOT "${PROJECT_SOURCE_DIR}/../../third_party/libtorch")
+if(NOT LIBTORCH_ROOT AND EXISTS "${DEFAULT_LIBTORCH_ROOT}/share/cmake/Torch/TorchConfig.cmake")
+    set(LIBTORCH_ROOT "${DEFAULT_LIBTORCH_ROOT}")
+endif()
+
+# Torch's CMake modules may enable CUDA; avoid empty-architecture cache failures.
+if(BUILD_TORCH_EXAMPLE)
+    if(DEFINED CMAKE_CUDA_ARCHITECTURES AND "${CMAKE_CUDA_ARCHITECTURES}" STREQUAL "")
+        set(CMAKE_CUDA_ARCHITECTURES native CACHE STRING "CUDA architectures" FORCE)
+    elseif(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+        set(CMAKE_CUDA_ARCHITECTURES native CACHE STRING "CUDA architectures")
+    endif()
+endif()
 
 ############################################################################
 # Sources
@@ -161,52 +177,143 @@ install(TARGETS ${PROJECT_NAME}
 # Generate examples
 if(BUILD_EXAMPLES)
     if(BUILD_VIDEO)
-        message("* Selected video examples available")
+        message("* Selected video examples available (v3 and v4)")
 
         ##### OpenCV is required
-        find_package(OpenCV REQUIRED)
+        find_package(OpenCV REQUIRED
+            COMPONENTS core imgproc highgui calib3d ximgproc
+            HINTS /usr/lib/x86_64-linux-gnu/cmake/opencv4
+        )
         include_directories(${OpenCV_INCLUDE_DIRS})
+        include_directories(${PROJECT_SOURCE_DIR}/examples/include)
 
-        ##### measure_distance_v1 Example
-        # Previously: zed_oc_multi_video_example.cpp
-        set(MEASURE_DISTANCE_EXAMPLE ${PROJECT_NAME}_measure_distance_v1)
-        add_executable(${MEASURE_DISTANCE_EXAMPLE}
-            "${PROJECT_SOURCE_DIR}/examples/measure_distance_v1.cpp")
-        set_target_properties(${MEASURE_DISTANCE_EXAMPLE} PROPERTIES PREFIX "")
-        set_property(TARGET ${MEASURE_DISTANCE_EXAMPLE}
+        # ##### measure_distance_v1 Example (disabled: release supports v3/v4 only)
+        # set(MEASURE_DISTANCE_EXAMPLE ${PROJECT_NAME}_measure_distance_v1)
+        # add_executable(${MEASURE_DISTANCE_EXAMPLE}
+        #     "${PROJECT_SOURCE_DIR}/examples/measure_distance_v1.cpp")
+        # set_target_properties(${MEASURE_DISTANCE_EXAMPLE} PROPERTIES PREFIX "")
+        # set_property(TARGET ${MEASURE_DISTANCE_EXAMPLE}
+        #     PROPERTY POSITION_INDEPENDENT_CODE ON)
+        # target_link_libraries(${MEASURE_DISTANCE_EXAMPLE}
+        #     ${PROJECT_NAME}
+        #     ${OpenCV_LIBS}
+        #     cnpy
+        # )
+        # install(TARGETS ${MEASURE_DISTANCE_EXAMPLE}
+        #     RUNTIME DESTINATION ${CMAKE_INSTALL_PREFIX}/bin
+        # )
+
+        ##### measure_distance_v3 Example (high-quality stereo pipeline)
+        set(MEASURE_DISTANCE_V3_EXAMPLE ${PROJECT_NAME}_measure_distance_v3)
+        add_executable(${MEASURE_DISTANCE_V3_EXAMPLE}
+            "${PROJECT_SOURCE_DIR}/examples/measure_distance_v3.cpp")
+        set_target_properties(${MEASURE_DISTANCE_V3_EXAMPLE} PROPERTIES PREFIX "")
+        set_property(TARGET ${MEASURE_DISTANCE_V3_EXAMPLE}
             PROPERTY POSITION_INDEPENDENT_CODE ON)
-        target_link_libraries(${MEASURE_DISTANCE_EXAMPLE}
+        target_link_libraries(${MEASURE_DISTANCE_V3_EXAMPLE}
             ${PROJECT_NAME}
             ${OpenCV_LIBS}
             cnpy
         )
-        install(TARGETS ${MEASURE_DISTANCE_EXAMPLE}
+        install(TARGETS ${MEASURE_DISTANCE_V3_EXAMPLE}
             RUNTIME DESTINATION ${CMAKE_INSTALL_PREFIX}/bin
         )
 
-        ##### Depth Example
-        find_package(OpenMP)
+        if(BUILD_TORCH_EXAMPLE)
+            find_package(nlohmann_json QUIET)
 
-        set(DEPTH_EXAMPLE ${PROJECT_NAME}_depth_example)
-        include_directories(${PROJECT_SOURCE_DIR}/examples/include)
-        add_executable(${DEPTH_EXAMPLE}
-            "${PROJECT_SOURCE_DIR}/examples/zed_oc_depth_example.cpp")
-        set_target_properties(${DEPTH_EXAMPLE} PROPERTIES PREFIX "")
+            if(Torch_DIR)
+                message(STATUS "Using Torch_DIR=${Torch_DIR}")
+                find_package(Torch QUIET)
+            elseif(LIBTORCH_ROOT)
+                file(TO_CMAKE_PATH "${LIBTORCH_ROOT}" LIBTORCH_ROOT_CMAKE)
+                set(Torch_DIR "${LIBTORCH_ROOT_CMAKE}/share/cmake/Torch")
+                message(STATUS "Using LibTorch root at ${LIBTORCH_ROOT_CMAKE}")
+                find_package(Torch QUIET)
+            endif()
 
-        if(OpenMP_CXX_FOUND)
-            include_directories(${OpenMP_CXX_INCLUDE_DIRS})
-            set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
-            target_link_libraries(${DEPTH_EXAMPLE}
-                OpenMP::OpenMP_CXX
-                ${PROJECT_NAME}
-                ${OpenCV_LIBS}
-            )
-        else()
-            target_link_libraries(${DEPTH_EXAMPLE}
-                ${PROJECT_NAME}
-                ${OpenCV_LIBS}
-            )
+            if(Torch_FOUND AND nlohmann_json_FOUND)
+                message("* Torch measurement example available")
+
+                # set(MEASURE_DISTANCE_V2_EXAMPLE ${PROJECT_NAME}_measure_distance_v2)
+                # add_executable(${MEASURE_DISTANCE_V2_EXAMPLE}
+                #     "${PROJECT_SOURCE_DIR}/examples/measure_distance_v2.cpp")
+                # set_target_properties(${MEASURE_DISTANCE_V2_EXAMPLE} PROPERTIES
+                #     PREFIX ""
+                #     CXX_STANDARD 17
+                #     CXX_STANDARD_REQUIRED ON
+                # )
+
+                # target_compile_options(${MEASURE_DISTANCE_V2_EXAMPLE} PRIVATE ${TORCH_CXX_FLAGS})
+
+                # target_link_libraries(${MEASURE_DISTANCE_V2_EXAMPLE}
+                #     ${PROJECT_NAME}
+                #     ${OpenCV_LIBS}
+                #     cnpy
+                #     ${TORCH_LIBRARIES}
+                #     nlohmann_json::nlohmann_json
+                # )
+
+                # install(TARGETS ${MEASURE_DISTANCE_V2_EXAMPLE}
+                #     RUNTIME DESTINATION ${CMAKE_INSTALL_PREFIX}/bin
+                # )
+
+                set(MEASURE_DISTANCE_V4_EXAMPLE ${PROJECT_NAME}_measure_distance_v4)
+                add_executable(${MEASURE_DISTANCE_V4_EXAMPLE}
+                    "${PROJECT_SOURCE_DIR}/examples/measure_distance_v4.cpp")
+                set_target_properties(${MEASURE_DISTANCE_V4_EXAMPLE} PROPERTIES
+                    PREFIX ""
+                    CXX_STANDARD 17
+                    CXX_STANDARD_REQUIRED ON
+                )
+
+                target_compile_options(${MEASURE_DISTANCE_V4_EXAMPLE} PRIVATE ${TORCH_CXX_FLAGS})
+
+                target_link_libraries(${MEASURE_DISTANCE_V4_EXAMPLE}
+                    ${PROJECT_NAME}
+                    ${OpenCV_LIBS}
+                    cnpy
+                    ${TORCH_LIBRARIES}
+                    nlohmann_json::nlohmann_json
+                )
+
+                install(TARGETS ${MEASURE_DISTANCE_V4_EXAMPLE}
+                    RUNTIME DESTINATION ${CMAKE_INSTALL_PREFIX}/bin
+                )
+            else()
+                if(NOT Torch_FOUND)
+                    message(WARNING "BUILD_TORCH_EXAMPLE=ON but LibTorch was not found. Set -DLIBTORCH_ROOT=/path/to/libtorch or -DTorch_DIR=/path/to/libtorch/share/cmake/Torch.")
+                endif()
+
+                if(NOT nlohmann_json_FOUND)
+                    message(WARNING "BUILD_TORCH_EXAMPLE=ON but nlohmann_json was not found. Skipping measure_distance_v4 target.")
+                endif()
+            endif()
         endif()
+
+        # ##### Depth Example (disabled: release supports v3/v4 only)
+        # find_package(OpenMP)
+
+        # set(DEPTH_EXAMPLE ${PROJECT_NAME}_depth_example)
+        # include_directories(${PROJECT_SOURCE_DIR}/examples/include)
+        # add_executable(${DEPTH_EXAMPLE}
+        #     "${PROJECT_SOURCE_DIR}/examples/zed_oc_depth_example.cpp")
+        # set_target_properties(${DEPTH_EXAMPLE} PROPERTIES PREFIX "")
+
+        # if(OpenMP_CXX_FOUND)
+        #     include_directories(${OpenMP_CXX_INCLUDE_DIRS})
+        #     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
+        #     target_link_libraries(${DEPTH_EXAMPLE}
+        #         OpenMP::OpenMP_CXX
+        #         ${PROJECT_NAME}
+        #         ${OpenCV_LIBS}
+        #     )
+        # else()
+        #     target_link_libraries(${DEPTH_EXAMPLE}
+        #         ${PROJECT_NAME}
+        #         ${OpenCV_LIBS}
+        #     )
+        # endif()
 
         # --------------------------------------------------------------------
         # Disabled examples
@@ -245,16 +352,17 @@ if(BUILD_EXAMPLES)
         #     ${OpenCV_LIBS}
         # )
 
-        ##### Stereo Tune App
-        set(STEREO_TUNE_APP ${PROJECT_NAME}_depth_tune_stereo)
-        include_directories(${PROJECT_SOURCE_DIR}/examples/include)
-        add_executable(${STEREO_TUNE_APP}
-            "${PROJECT_SOURCE_DIR}/examples/tools/zed_oc_tune_stereo_sgbm.cpp")
-        set_target_properties(${STEREO_TUNE_APP} PROPERTIES PREFIX "")
-        target_link_libraries(${STEREO_TUNE_APP}
-            ${PROJECT_NAME}
-            ${OpenCV_LIBS}
-        )
+        # ##### Stereo Tune App (disabled: release supports v3/v4 only)
+        # set(STEREO_TUNE_APP ${PROJECT_NAME}_depth_tune_stereo)
+        # include_directories(${PROJECT_SOURCE_DIR}/examples/include)
+        # add_executable(${STEREO_TUNE_APP}
+        #     "${PROJECT_SOURCE_DIR}/examples/tools/zed_oc_tune_stereo_sgbm.cpp")
+        # set_target_properties(${STEREO_TUNE_APP} PROPERTIES PREFIX "")
+        # target_link_libraries(${STEREO_TUNE_APP}
+        #     ${PROJECT_NAME}
+        #     ${OpenCV_LIBS}
+        #     cnpy
+        # )
 
         # if(DEBUG_CAM_REG)
         #     add_executable(${PROJECT_NAME}_video_reg_log

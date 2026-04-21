@@ -21,6 +21,7 @@
 // ----> Includes
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <exception>
 #include <iomanip>
 #include <iostream>
@@ -30,6 +31,7 @@
 #include <vector>
 
 #include <opencv2/opencv.hpp>
+#include <opencv2/ximgproc.hpp>
 
 #include "calibration.hpp"
 #include "cnpy.h"
@@ -37,9 +39,9 @@
 // <---- Includes
 
 // INPUT SOURCE
-// #define USE_LOCAL_VIDEO
+#define USE_LOCAL_VIDEO
 // #define USE_GSTREAMER_STREAM
-#define USE_LIVE_ZED_CAMERA
+// #define USE_LIVE_ZED_CAMERA
 
 // CALIBRATION SOURCE
 // #define USE_SN_CONF_CALIBRATION
@@ -62,8 +64,8 @@
 #endif
 
 // Depth matcher mode (switch by commenting/uncommenting one line):
-#define DEPTH_MATCHER_HALF_RES
-// #define DEPTH_MATCHER_FULL_RES
+// #define DEPTH_MATCHER_HALF_RES
+#define DEPTH_MATCHER_FULL_RES
 
 #if defined(DEPTH_MATCHER_HALF_RES) && defined(DEPTH_MATCHER_FULL_RES)
 #error "Enable only one depth matcher mode."
@@ -78,6 +80,44 @@
 #else
 #define DEPTH_MATCHER_RESIZE_DIVISOR 1
 #endif
+
+#ifndef DEFAULT_LOCAL_VIDEO_PATH
+#define DEFAULT_LOCAL_VIDEO_PATH "recording.mp4"
+#endif
+
+#ifndef DEFAULT_SN_CALIBRATION_PATH
+#define DEFAULT_SN_CALIBRATION_PATH "SN31223474.conf"
+#endif
+
+#ifndef DEFAULT_GSTREAMER_PIPELINE
+#define DEFAULT_GSTREAMER_PIPELINE "rtspsrc location=rtsp://192.168.1.100:8554/videofeed latency=0 buffer-mode=auto ! decodebin ! videoconvert ! appsink max-buffers=1 drop=True"
+#endif
+
+#ifndef DEFAULT_UNDERWATER_CALIB_DIR
+#define DEFAULT_UNDERWATER_CALIB_DIR "underwater_calibration"
+#endif
+
+double normalizeBaselineMm(double baseline)
+{
+    baseline = std::abs(baseline);
+    if (baseline < 1.0)
+    {
+        baseline *= 1000.0;
+    }
+
+    return baseline;
+}
+
+std::string resolvePathFromEnvOrDefault(const char* envKey, const char* fallback)
+{
+    const char* envValue = std::getenv(envKey);
+    if (envValue && envValue[0] != '\0')
+    {
+        return std::string(envValue);
+    }
+
+    return std::string(fallback);
+}
 
 bool loadUnderwaterCalibration(
     const std::string& calibDir,
@@ -131,11 +171,7 @@ bool loadUnderwaterCalibration(
         }
 
         cv::Mat T = cv::Mat(3, 1, CV_64F, tNpy.data<double>()).clone();
-        baseline = std::abs(T.at<double>(0, 0));
-        if (baseline < 1.0)
-        {
-            baseline *= 1000.0;
-        }
+        baseline = normalizeBaselineMm(T.at<double>(0, 0));
 
         fx = cameraMatrix_left.at<double>(0, 0);
         fy = cameraMatrix_left.at<double>(1, 1);
@@ -222,6 +258,9 @@ struct AppState
     AppMode mode = AppMode::LIVE_VIEW;
 
     cv::Mat frozenImage;
+    cv::Mat frozenRawDisparityMap;
+    cv::Mat frozenFilteredDisparityMap;
+    cv::Mat frozenValidityMask;
     cv::Mat frozenDisparityMap;
     cv::Mat frozenDepthMap;
 
@@ -232,6 +271,12 @@ struct AppState
     double fy = 0.0;
     double cx = 0.0;
     double cy = 0.0;
+    double baseline = 0.0;
+
+    bool showRawDisparity = false;
+    bool showFilteredDisparity = true;
+    bool showValidityMask = false;
+    bool showDepthMap = false;
 
     std::string statusMessage;
 };
@@ -331,6 +376,74 @@ float sampleDepthNeighborhood(const cv::Mat& depthMap, int x, int y)
     return median;
 }
 
+float sampleDepthFromDisparityNeighborhood(
+    const cv::Mat& disparityMap,
+    int x,
+    int y,
+    double fx,
+    double baseline)
+{
+    if (disparityMap.empty() || x < 0 || y < 0 || x >= disparityMap.cols || y >= disparityMap.rows)
+    {
+        return std::numeric_limits<float>::quiet_NaN();
+    }
+
+    const float centerDisp = disparityMap.at<float>(y, x);
+    if (!std::isfinite(centerDisp) || centerDisp <= 0.0f)
+    {
+        return std::numeric_limits<float>::quiet_NaN();
+    }
+
+    constexpr int halfWindow = 3; // 7x7 neighborhood
+    constexpr float disparityDeltaThreshold = 2.0f;
+    std::vector<float> validDisparities;
+    validDisparities.reserve((2 * halfWindow + 1) * (2 * halfWindow + 1));
+
+    for (int yy = y - halfWindow; yy <= y + halfWindow; ++yy)
+    {
+        for (int xx = x - halfWindow; xx <= x + halfWindow; ++xx)
+        {
+            if (xx < 0 || yy < 0 || xx >= disparityMap.cols || yy >= disparityMap.rows)
+            {
+                continue;
+            }
+
+            const float localDisp = disparityMap.at<float>(yy, xx);
+            if (!std::isfinite(localDisp) || localDisp <= 0.0f)
+            {
+                continue;
+            }
+
+            if (std::abs(localDisp - centerDisp) <= disparityDeltaThreshold)
+            {
+                validDisparities.push_back(localDisp);
+            }
+        }
+    }
+
+    if (validDisparities.empty())
+    {
+        return std::numeric_limits<float>::quiet_NaN();
+    }
+
+    const size_t mid = validDisparities.size() / 2;
+    std::nth_element(validDisparities.begin(), validDisparities.begin() + static_cast<long>(mid), validDisparities.end());
+    float medianDisp = validDisparities[mid];
+
+    if (validDisparities.size() % 2 == 0)
+    {
+        std::nth_element(validDisparities.begin(), validDisparities.begin() + static_cast<long>(mid - 1), validDisparities.end());
+        medianDisp = 0.5f * (medianDisp + validDisparities[mid - 1]);
+    }
+
+    if (medianDisp <= 0.0f)
+    {
+        return std::numeric_limits<float>::quiet_NaN();
+    }
+
+    return static_cast<float>((fx * baseline) / static_cast<double>(medianDisp));
+}
+
 double computeDistanceCm(
     const cv::Point& p1,
     const cv::Point& p2,
@@ -390,6 +503,39 @@ cv::Mat makeDisparityDisplay(const cv::Mat& disparity)
     return disparity8u;
 }
 
+cv::Mat makeDepthDisplay(const cv::Mat& depthMap)
+{
+    if (depthMap.empty())
+    {
+        return cv::Mat();
+    }
+
+    cv::Mat validMask = (depthMap > 0.0f) & (depthMap < 10000.0f);
+    if (cv::countNonZero(validMask) == 0)
+    {
+        return cv::Mat();
+    }
+
+    cv::Mat clipped = depthMap.clone();
+    clipped.setTo(0.0f, ~validMask);
+
+    double minVal = 0.0;
+    double maxVal = 0.0;
+    cv::minMaxLoc(clipped, &minVal, &maxVal, nullptr, nullptr, validMask);
+    if (maxVal <= minVal)
+    {
+        return cv::Mat();
+    }
+
+    cv::Mat normalized;
+    cv::normalize(clipped, normalized, 0, 255, cv::NORM_MINMAX, CV_8U, validMask);
+
+    cv::Mat color;
+    cv::applyColorMap(normalized, color, cv::COLORMAP_TURBO);
+    color.setTo(cv::Scalar(0, 0, 0), ~validMask);
+    return color;
+}
+
 void drawMeasurements(const AppState& state, cv::Mat& display)
 {
     for (const auto& m : state.measurements)
@@ -419,10 +565,10 @@ void drawOverlay(const AppState& state, cv::Mat& display)
 {
     const std::string modeLine =
         (state.mode == AppMode::LIVE_VIEW)
-            ? "LIVE MODE - press SPACE to capture frame"
+            ? "LIVE MODE - press SPACE to pause and compute"
             : "MEASUREMENT MODE - click two points";
 
-    const std::string controls = "SPACE: freeze    U: undo    C: clear    R: live    Q: quit";
+    const std::string controls = "SPACE: freeze  U: undo  C: clear  R: live  D/F/M/Z: debug  Q: quit";
 
     cv::putText(display, modeLine, cv::Point(20, 30), cv::FONT_HERSHEY_SIMPLEX, 0.7, cv::Scalar(40, 255, 40), 2, cv::LINE_AA);
     cv::putText(display, controls, cv::Point(20, 60), cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
@@ -470,8 +616,28 @@ void onMouse(int event, int x, int y, int /*flags*/, void* userdata)
     const cv::Point p1 = state->pendingPoints[0];
     const cv::Point p2 = state->pendingPoints[1];
 
-    const float d1 = sampleDepthNeighborhood(state->frozenDepthMap, p1.x, p1.y);
-    const float d2 = sampleDepthNeighborhood(state->frozenDepthMap, p2.x, p2.y);
+    float d1 = sampleDepthFromDisparityNeighborhood(state->frozenFilteredDisparityMap, p1.x, p1.y, state->fx, state->baseline);
+    float d2 = sampleDepthFromDisparityNeighborhood(state->frozenFilteredDisparityMap, p2.x, p2.y, state->fx, state->baseline);
+
+    if ((!std::isfinite(d1) || d1 <= 0.0f) && !state->frozenDepthMap.empty())
+    {
+        const float fallback = sampleDepthNeighborhood(state->frozenDepthMap, p1.x, p1.y);
+        if (std::isfinite(fallback) && fallback > 0.0f)
+        {
+            d1 = fallback;
+            state->statusMessage = "P1 used fallback depth sample";
+        }
+    }
+
+    if ((!std::isfinite(d2) || d2 <= 0.0f) && !state->frozenDepthMap.empty())
+    {
+        const float fallback = sampleDepthNeighborhood(state->frozenDepthMap, p2.x, p2.y);
+        if (std::isfinite(fallback) && fallback > 0.0f)
+        {
+            d2 = fallback;
+            state->statusMessage = "P2 used fallback depth sample";
+        }
+    }
 
     if (!std::isfinite(d1) || !std::isfinite(d2) || d1 <= 0.0f || d2 <= 0.0f)
     {
@@ -493,9 +659,13 @@ bool computeDepthMap(
     const cv::Mat& leftRect,
     const cv::Mat& rightRect,
     cv::Ptr<cv::StereoSGBM>& leftMatcher,
+    cv::Ptr<cv::StereoMatcher>& rightMatcher,
+    cv::Ptr<cv::ximgproc::DisparityWLSFilter>& wlsFilter,
     double fx,
     double baseline,
+    cv::Mat& rawDisparityMap,
     cv::Mat& disparityMap,
+    cv::Mat& lrValidityMask,
     cv::Mat& depthMap)
 {
     if (leftRect.empty() || rightRect.empty())
@@ -503,43 +673,68 @@ bool computeDepthMap(
         return false;
     }
 
+    cv::Mat grayL;
+    cv::Mat grayR;
+    cv::cvtColor(leftRect, grayL, cv::COLOR_BGR2GRAY);
+    cv::cvtColor(rightRect, grayR, cv::COLOR_BGR2GRAY);
+
+    cv::Ptr<cv::CLAHE> clahe = cv::createCLAHE(2.0, cv::Size(8, 8));
+    clahe->apply(grayL, grayL);
+    clahe->apply(grayR, grayR);
+
     cv::Mat leftForMatcher;
     cv::Mat rightForMatcher;
-    constexpr double resizeFact = 1.0 / static_cast<double>(DEPTH_MATCHER_RESIZE_DIVISOR);
-
 #if DEPTH_MATCHER_RESIZE_DIVISOR == 1
-    leftForMatcher = leftRect;
-    rightForMatcher = rightRect;
+    leftForMatcher = grayL;
+    rightForMatcher = grayR;
 #else
     // Resize images for faster disparity computation, then scale disparity back.
-    cv::resize(leftRect, leftForMatcher, cv::Size(), resizeFact, resizeFact, cv::INTER_AREA);
-    cv::resize(rightRect, rightForMatcher, cv::Size(), resizeFact, resizeFact, cv::INTER_AREA);
+    constexpr double resizeFact = 1.0 / static_cast<double>(DEPTH_MATCHER_RESIZE_DIVISOR);
+    cv::resize(grayL, leftForMatcher, cv::Size(), resizeFact, resizeFact, cv::INTER_AREA);
+    cv::resize(grayR, rightForMatcher, cv::Size(), resizeFact, resizeFact, cv::INTER_AREA);
 #endif
 
-    cv::Mat disparityHalf;
-    leftMatcher->compute(leftForMatcher, rightForMatcher, disparityHalf);
+    cv::Mat dispLeft16;
+    cv::Mat dispRight16;
+    leftMatcher->compute(leftForMatcher, rightForMatcher, dispLeft16);
+    rightMatcher->compute(rightForMatcher, leftForMatcher, dispRight16);
 
-    cv::Mat disparity;
-    disparityHalf.convertTo(disparity, CV_32FC1);
-    disparity *= 1.0f / 16.0f;
+    cv::Mat disparityRaw;
+    dispLeft16.convertTo(disparityRaw, CV_32FC1, 1.0 / 16.0);
+    cv::threshold(disparityRaw, disparityRaw, 0.1, 0.0, cv::THRESH_TOZERO);
+    rawDisparityMap = disparityRaw;
 
-#if DEPTH_MATCHER_RESIZE_DIVISOR != 1
-    disparity *= static_cast<float>(DEPTH_MATCHER_RESIZE_DIVISOR);
-    cv::resize(disparity, disparity, leftRect.size(), 0.0, 0.0, cv::INTER_LINEAR);
-#endif
-
-    cv::threshold(disparity, disparity, 0.1, 0.0, cv::THRESH_TOZERO);
+    cv::Mat filtered16;
+    // 8000, 1.5
+    wlsFilter->setLambda(12000.0);
+    wlsFilter->setSigmaColor(1.2);
+    wlsFilter->filter(dispLeft16, leftForMatcher, filtered16, dispRight16);
 
     cv::Mat filteredDisparity;
-
-    // Bilateral filter helps to smooth disparity while preserving edges, 
-    // which can improve depth accuracy for measurement points.
-    // for more stable depth -> cv::bilateralFilter(disparity, filteredDisparity, 7, 35.0, 35.0);
-    cv::bilateralFilter(disparity, filteredDisparity, 5, 25.0, 25.0);
+    filtered16.convertTo(filteredDisparity, CV_32FC1, 1.0 / 16.0);
+    cv::threshold(filteredDisparity, filteredDisparity, 0.1, 0.0, cv::THRESH_TOZERO);
     disparityMap = filteredDisparity;
+
+    cv::Mat confidence = wlsFilter->getConfidenceMap();
+    if (!confidence.empty())
+    {
+        // threshhold: 128
+        cv::threshold(confidence, lrValidityMask, 192.0, 255.0, cv::THRESH_BINARY);
+        lrValidityMask.convertTo(lrValidityMask, CV_8U);
+    }
+    else
+    {
+        lrValidityMask = (filteredDisparity > 0.0f);
+        lrValidityMask.convertTo(lrValidityMask, CV_8U, 255.0);
+    }
 
     const double numerator = fx * baseline;
     cv::divide(numerator, filteredDisparity, depthMap);
+
+    if (!lrValidityMask.empty())
+    {
+        depthMap.setTo(0.0f, lrValidityMask == 0);
+    }
 
     return !depthMap.empty();
 }
@@ -550,7 +745,7 @@ int main(int argc, char* argv[])
     (void)argv;
 
 #ifdef USE_LOCAL_VIDEO
-    const std::string localVideoPath = "recording.mp4";
+    const std::string localVideoPath = resolvePathFromEnvOrDefault("STEREOANYWHERE_INPUT_VIDEO", DEFAULT_LOCAL_VIDEO_PATH);
     cv::VideoCapture cap(localVideoPath);
     g_videoCapPtr = &cap;
     if (!cap.isOpened())
@@ -561,9 +756,7 @@ int main(int argc, char* argv[])
 #endif
 
 #ifdef USE_GSTREAMER_STREAM
-    const std::string gstPipeline =
-        "rtspsrc location=rtsp://192.168.1.100:8554/videofeed latency=0 buffer-mode=auto "
-        "! decodebin ! videoconvert ! appsink max-buffers=1 drop=True";
+    const std::string gstPipeline = resolvePathFromEnvOrDefault("STEREOANYWHERE_GST_PIPELINE", DEFAULT_GSTREAMER_PIPELINE);
     cv::VideoCapture cap(gstPipeline, cv::CAP_GSTREAMER);
     g_videoCapPtr = &cap;
     if (!cap.isOpened())
@@ -631,7 +824,7 @@ int main(int argc, char* argv[])
     #ifdef USE_LIVE_ZED_CAMERA
     // For live ZED camera, only use local calibration file (no download)
     #endif
-    const std::string calibration_file = "SN31223474.conf";
+    const std::string calibration_file = resolvePathFromEnvOrDefault("STEREOANYWHERE_SN_CALIB", DEFAULT_SN_CALIBRATION_PATH);
     if (!sl_oc::tools::initCalibration(calibration_file,
                                        resolution,
                                        map_left_x,
@@ -650,11 +843,11 @@ int main(int argc, char* argv[])
     fy = cameraMatrix_left.at<double>(1, 1);
     cx = cameraMatrix_left.at<double>(0, 2);
     cy = cameraMatrix_left.at<double>(1, 2);
-    baseline = std::abs(baseline);
+    baseline = normalizeBaselineMm(baseline);
 #endif
 
 #ifdef USE_UNDERWATER_NPY_CALIBRATION
-    const std::string calibDir = "underwater_calibration";
+    const std::string calibDir = resolvePathFromEnvOrDefault("STEREOANYWHERE_UNDERWATER_CALIB_DIR", DEFAULT_UNDERWATER_CALIB_DIR);
     if (!loadUnderwaterCalibration(calibDir,
                                    cameraMatrix_left,
                                    cameraMatrix_right,
@@ -680,6 +873,7 @@ int main(int argc, char* argv[])
     state.fy = fy;
     state.cx = cx;
     state.cy = cy;
+    state.baseline = baseline;
     state.statusMessage = "Live mode ready";
 
     std::cout << "Camera Matrix L:\n" << cameraMatrix_left << std::endl;
@@ -691,28 +885,24 @@ int main(int argc, char* argv[])
     std::cout << "baseline: " << baseline << std::endl;
     std::cout << "Baseline: " << baseline << " mm" << std::endl;
 
-    sl_oc::tools::StereoSgbmPar stereoPar;
-    if (!stereoPar.load())
-    {
-        stereoPar.save();
-    }
+    constexpr int blockSize = 5;
+    constexpr int numDisparities = 224; // Must be a multiple of 16
+    constexpr int minDisparity = 0;
 
-    cv::Ptr<cv::StereoSGBM> leftMatcher = cv::StereoSGBM::create(
-        stereoPar.minDisparity,
-        stereoPar.numDisparities,
-        stereoPar.blockSize);
-    leftMatcher->setMinDisparity(stereoPar.minDisparity);
-    leftMatcher->setNumDisparities(stereoPar.numDisparities);
-    leftMatcher->setBlockSize(stereoPar.blockSize);
-    leftMatcher->setP1(stereoPar.P1);
-    leftMatcher->setP2(stereoPar.P2);
-    leftMatcher->setDisp12MaxDiff(stereoPar.disp12MaxDiff);
-    leftMatcher->setMode(stereoPar.mode);
-    leftMatcher->setPreFilterCap(stereoPar.preFilterCap);
-    leftMatcher->setUniquenessRatio(stereoPar.uniquenessRatio);
-    leftMatcher->setSpeckleWindowSize(stereoPar.speckleWindowSize);
-    leftMatcher->setSpeckleRange(stereoPar.speckleRange);
-    stereoPar.print();
+    cv::Ptr<cv::StereoSGBM> leftMatcher = cv::StereoSGBM::create(minDisparity, numDisparities, blockSize);
+    leftMatcher->setMinDisparity(minDisparity);
+    leftMatcher->setNumDisparities(numDisparities);
+    leftMatcher->setBlockSize(blockSize);
+    leftMatcher->setP1(8 * blockSize * blockSize);
+    leftMatcher->setP2(32 * blockSize * blockSize);
+    leftMatcher->setUniquenessRatio(10);
+    leftMatcher->setSpeckleWindowSize(100);
+    leftMatcher->setSpeckleRange(2);
+    leftMatcher->setDisp12MaxDiff(1);
+    leftMatcher->setMode(cv::StereoSGBM::MODE_HH4);
+
+    cv::Ptr<cv::StereoMatcher> rightMatcher = cv::ximgproc::createRightMatcher(leftMatcher);
+    cv::Ptr<cv::ximgproc::DisparityWLSFilter> wlsFilter = cv::ximgproc::createDisparityWLSFilter(leftMatcher);
 
     cv::namedWindow("Stereo Distance", cv::WINDOW_AUTOSIZE);
     cv::setMouseCallback("Stereo Distance", onMouse, &state);
@@ -721,7 +911,9 @@ int main(int argc, char* argv[])
     cv::Mat rightRaw;
     cv::Mat leftRect;
     cv::Mat rightRect;
+    cv::Mat rawDisparityMap;
     cv::Mat disparityMap;
+    cv::Mat validityMask;
     cv::Mat depthMap;
 
     bool useBufferedFrame = true;
@@ -755,14 +947,15 @@ int main(int argc, char* argv[])
             cv::remap(leftRaw, leftRect, map_left_x, map_left_y, cv::INTER_AREA);
             cv::remap(rightRaw, rightRect, map_right_x, map_right_y, cv::INTER_AREA);
 
-            if (!computeDepthMap(leftRect, rightRect, leftMatcher, state.fx, baseline, disparityMap, depthMap))
-            {
-                state.statusMessage = "Depth computation failed";
-            }
-
             cv::Mat liveDisplay = leftRect.clone();
             drawOverlay(state, liveDisplay);
             cv::imshow("Stereo Distance", liveDisplay);
+
+            // In live mode we keep the stream light: no depth computation or debug maps.
+            cv::destroyWindow("Raw Disparity");
+            cv::destroyWindow("Filtered Disparity");
+            cv::destroyWindow("LR Validity Mask");
+            cv::destroyWindow("Depth Map");
         }
         else
         {
@@ -771,11 +964,55 @@ int main(int argc, char* argv[])
             drawOverlay(state, measureDisplay);
             cv::imshow("Stereo Distance", measureDisplay);
 
-            cv::Mat disparityDisplay = makeDisparityDisplay(state.frozenDisparityMap);
-            if (!disparityDisplay.empty())
+            if (state.showRawDisparity)
             {
-                drawOverlay(state, disparityDisplay);
-                cv::imshow("Disparity Map", disparityDisplay);
+                cv::Mat rawDispDisplay = makeDisparityDisplay(state.frozenRawDisparityMap);
+                if (!rawDispDisplay.empty())
+                {
+                    cv::imshow("Raw Disparity", rawDispDisplay);
+                }
+            }
+            else
+            {
+                cv::destroyWindow("Raw Disparity");
+            }
+
+            if (state.showFilteredDisparity)
+            {
+                cv::Mat filteredDispDisplay = makeDisparityDisplay(state.frozenFilteredDisparityMap);
+                if (!filteredDispDisplay.empty())
+                {
+                    cv::imshow("Filtered Disparity", filteredDispDisplay);
+                }
+            }
+            else
+            {
+                cv::destroyWindow("Filtered Disparity");
+            }
+
+            if (state.showValidityMask)
+            {
+                if (!state.frozenValidityMask.empty())
+                {
+                    cv::imshow("LR Validity Mask", state.frozenValidityMask);
+                }
+            }
+            else
+            {
+                cv::destroyWindow("LR Validity Mask");
+            }
+
+            if (state.showDepthMap)
+            {
+                cv::Mat depthDisplay = makeDepthDisplay(state.frozenDepthMap);
+                if (!depthDisplay.empty())
+                {
+                    cv::imshow("Depth Map", depthDisplay);
+                }
+            }
+            else
+            {
+                cv::destroyWindow("Depth Map");
             }
         }
 
@@ -786,15 +1023,35 @@ int main(int argc, char* argv[])
         }
         else if (key == ' ')
         {
-            if (state.mode == AppMode::LIVE_VIEW && !leftRect.empty() && !disparityMap.empty() && !depthMap.empty())
+            if (state.mode == AppMode::LIVE_VIEW && !leftRect.empty() && !rightRect.empty())
             {
-                state.frozenImage = leftRect.clone();
-                state.frozenDisparityMap = disparityMap.clone();
-                state.frozenDepthMap = depthMap.clone();
-                state.measurements.clear();
-                state.pendingPoints.clear();
-                state.mode = AppMode::MEASURE_VIEW;
-                state.statusMessage = "Frame frozen. Click two points to measure";
+                if (computeDepthMap(leftRect,
+                                    rightRect,
+                                    leftMatcher,
+                                    rightMatcher,
+                                    wlsFilter,
+                                    state.fx,
+                                    baseline,
+                                    rawDisparityMap,
+                                    disparityMap,
+                                    validityMask,
+                                    depthMap))
+                {
+                    state.frozenImage = leftRect.clone();
+                    state.frozenRawDisparityMap = rawDisparityMap.clone();
+                    state.frozenFilteredDisparityMap = disparityMap.clone();
+                    state.frozenValidityMask = validityMask.clone();
+                    state.frozenDisparityMap = disparityMap.clone();
+                    state.frozenDepthMap = depthMap.clone();
+                    state.measurements.clear();
+                    state.pendingPoints.clear();
+                    state.mode = AppMode::MEASURE_VIEW;
+                    state.statusMessage = "Frame paused and computed. Click two points to measure";
+                }
+                else
+                {
+                    state.statusMessage = "Depth computation failed on paused frame";
+                }
             }
         }
         else if (key == 'u' || key == 'U')
@@ -828,9 +1085,32 @@ int main(int argc, char* argv[])
             state.measurements.clear();
             state.pendingPoints.clear();
             state.frozenImage.release();
+            state.frozenRawDisparityMap.release();
+            state.frozenFilteredDisparityMap.release();
+            state.frozenValidityMask.release();
             state.frozenDisparityMap.release();
             state.frozenDepthMap.release();
             state.statusMessage = "Returned to live mode";
+        }
+        else if (key == 'd' || key == 'D')
+        {
+            state.showRawDisparity = !state.showRawDisparity;
+            state.statusMessage = state.showRawDisparity ? "Raw disparity ON" : "Raw disparity OFF";
+        }
+        else if (key == 'f' || key == 'F')
+        {
+            state.showFilteredDisparity = !state.showFilteredDisparity;
+            state.statusMessage = state.showFilteredDisparity ? "Filtered disparity ON" : "Filtered disparity OFF";
+        }
+        else if (key == 'm' || key == 'M')
+        {
+            state.showValidityMask = !state.showValidityMask;
+            state.statusMessage = state.showValidityMask ? "Validity mask ON" : "Validity mask OFF";
+        }
+        else if (key == 'z' || key == 'Z')
+        {
+            state.showDepthMap = !state.showDepthMap;
+            state.statusMessage = state.showDepthMap ? "Depth debug view ON" : "Depth debug view OFF";
         }
     }
 

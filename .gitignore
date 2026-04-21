@@ -1,2 +1,5 @@
 *.mp4
 src/iceberg_depth/build/
+exports
+_build_check
+third_party

@@ -2,6 +2,11 @@
 
 Stereo distance measurement tool built on top of the Stereolabs Open Capture API.
 
+This repository publishes two supported measurement apps:
+
+- `measure_distance_v3`: OpenCV stereo pipeline (WLS + pause-to-compute workflow)
+- `measure_distance_v4`: TorchScript stereo pipeline (pause-to-compute workflow)
+
 The application supports:
 
 - prerecorded side-by-side stereo video files (`.mp4`)
@@ -21,7 +26,11 @@ The application supports:
 
 ---
 
-## Installation
+## Setup
+
+This section is the recommended repository setup for clean uploads and reproducible builds.
+
+### 1) Install prerequisites
 
 First make the scripts executable:
 
@@ -37,6 +46,65 @@ Then install all required dependencies:
 ./install_prereqs.sh
 ```
 
+### 2) Create and populate the exports directory
+
+Create the model directory in the repository root:
+
+```bash
+mkdir -p exports
+```
+
+Place your TorchScript model there, for example:
+
+```text
+exports/stereoanywhere2_torchscript.pt
+```
+
+By default, v4 reads `exports/stereoanywhere2_torchscript.pt`.
+
+You can override model path at runtime:
+
+```bash
+STEREOANYWHERE_MODEL_SPEC=exports/my_model.pt ./src/iceberg_depth/build/zed_open_capture_measure_distance_v4
+```
+
+or by command line argument:
+
+```bash
+./src/iceberg_depth/build/zed_open_capture_measure_distance_v4 exports/my_model.pt
+```
+
+### 3) Download LibTorch and place it in the repository
+
+Download LibTorch from the official PyTorch site (CPU or CUDA package matching your machine), then extract it to:
+
+```text
+third_party/libtorch
+```
+
+Expected check path:
+
+```text
+third_party/libtorch/share/cmake/Torch/TorchConfig.cmake
+```
+
+CMake auto-detects this path. You can also override manually:
+
+```bash
+export LIBTORCH_ROOT=/absolute/path/to/libtorch
+```
+
+### 4) Optional environment overrides (no hardcoded absolute paths required)
+
+These overrides apply to both v3 and v4 where relevant.
+
+- `STEREOANYWHERE_MODEL_SPEC`: model file or config for v4
+- `STEREOANYWHERE_INPUT_VIDEO`: local video path in `USE_LOCAL_VIDEO` mode
+- `STEREOANYWHERE_SN_CALIB`: calibration `.conf` path in `USE_SN_CONF_CALIBRATION` mode
+- `STEREOANYWHERE_GST_PIPELINE`: full GStreamer pipeline string in `USE_GSTREAMER_STREAM` mode
+- `STEREOANYWHERE_UNDERWATER_CALIB_DIR`: underwater calibration directory path
+- `STEREOANYWHERE_TORCH_DEVICE`: `cpu` (default) or `cuda`
+
 ---
 
 ## Build
@@ -44,6 +112,32 @@ Then install all required dependencies:
 ```bash
 ./build.sh
 ```
+
+By default this repository now builds only:
+
+- `measure_distance_v3`
+- `measure_distance_v4`
+
+`measure_distance_v3` requires OpenCV with `ximgproc` (OpenCV contrib).
+
+`measure_distance_v4` requires both `LibTorch` and `nlohmann_json`.
+
+Example:
+
+```bash
+export LIBTORCH_ROOT=/opt/libtorch
+./build.sh
+```
+
+If `third_party/libtorch` exists in the repository, `build.sh` and CMake will use it automatically.
+
+You can also configure CMake directly:
+
+```bash
+cmake .. -DLIBTORCH_ROOT=/opt/libtorch -DBUILD_TORCH_EXAMPLE=ON
+```
+
+If v4 does not appear, clear the CMake cache and rebuild.
 
 ---
 
@@ -53,6 +147,30 @@ Then install all required dependencies:
 ./run_receiver.sh
 ```
 
+To run v3:
+
+```bash
+./src/iceberg_depth/build/zed_open_capture_measure_distance_v3
+```
+
+To run v4:
+
+```bash
+./src/iceberg_depth/build/zed_open_capture_measure_distance_v4
+```
+
+Optional model argument:
+
+```bash
+./src/iceberg_depth/build/zed_open_capture_measure_distance_v4 exports/stereoanywhere2_torchscript.pt
+```
+
+Optional runtime device selection:
+
+```bash
+STEREOANYWHERE_TORCH_DEVICE=cuda ./src/iceberg_depth/build/zed_open_capture_measure_distance_v4
+```
+
 ---
 
 ## Source Selection
@@ -60,10 +178,24 @@ Then install all required dependencies:
 Input source and calibration source are selected in:
 
 ```text
-src/iceberg_depth/examples/measure_distance_v1.cpp
+src/iceberg_depth/examples/measure_distance_v3.cpp
+```
+
+For TorchScript v4, update the same defines in:
+
+```text
+src/iceberg_depth/examples/measure_distance_v4.cpp
 ```
 
 by changing the `#define` block at the top of the file.
+
+For v4 model path default, edit:
+
+```text
+src/iceberg_depth/examples/measure_distance_v4.cpp
+```
+
+and update `DEFAULT_MODEL_CONFIG_PATH`, or pass model path using CLI/env (recommended for release).
 
 ### Input Source
 
@@ -145,7 +277,7 @@ Requirements:
 #define USE_GSTREAMER_STREAM
 ```
 
-Edit the pipeline in `measure_distance_v1.cpp`:
+Edit the pipeline in `measure_distance_v3.cpp` or `measure_distance_v4.cpp`:
 
 ```cpp
 const std::string gstPipeline =
@@ -227,26 +359,14 @@ Therefore the input source must match this resolution.
 
 ---
 
-## Stereo Parameter Tuning
+## Release Scope
 
-The repository includes a StereoSGBM tuning tool:
+This release is intentionally scoped to:
 
-```text
-src/iceberg_depth/examples/tools/zed_oc_tune_stereo_sgbm.cpp
-```
+- `measure_distance_v3`
+- `measure_distance_v4`
 
-After building:
-
-```bash
-cd src/iceberg_depth/build
-./zed_open_capture_depth_tune_stereo
-```
-
-The saved tuning file is automatically reused by the measurement application. The parameter file is usually stored in:
-
-```text
-~/zed/settings/zed_oc_stereo.yaml
-```
+Legacy examples and tuning tools remain in source for reference but are disabled in default CMake targets.
 
 ---
 
@@ -254,10 +374,30 @@ The saved tuning file is automatically reused by the measurement application. Th
 
 1. Start the application
 2. Wait for the live image
-3. Press `SPACE`
+3. Press `SPACE` to pause and compute depth/disparity for that frame
 4. Click two points
 5. The points are connected and the distance is displayed
 6. Repeat for additional measurements
+
+---
+
+## What Is Different In v3 vs v4
+
+Both v3 and v4 use the same interaction flow (live preview, compute on `SPACE`, measurement in frozen frame).
+
+Main differences:
+
+- Backend:
+    - v3 uses OpenCV StereoSGBM + WLS.
+    - v4 uses TorchScript model inference.
+
+- Dependency profile:
+    - v3 depends on OpenCV (+ contrib/ximgproc).
+    - v4 additionally depends on LibTorch + nlohmann_json.
+
+- Tuning model:
+    - v3 tuning is matcher/filter parameter based.
+    - v4 tuning is model/export/config based.
 
 ---
 
@@ -265,11 +405,15 @@ The saved tuning file is automatically reused by the measurement application. Th
 
 | Key | Action |
 |---|---|
-| `SPACE` | Freeze current frame |
+| `SPACE` | Pause frame and compute depth/disparity |
 | Left click twice | Create a measurement |
 | `U` | Undo last point or measurement |
 | `C` | Clear all measurements |
 | `R` | Return to live mode |
+| `D` | Toggle raw disparity debug view |
+| `F` | Toggle filtered disparity debug view |
+| `M` | Toggle left-right validity mask debug view |
+| `Z` | Toggle depth debug view |
 | `Q` | Quit |
 
 ---
