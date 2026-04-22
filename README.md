@@ -45,10 +45,10 @@ Then install all required dependencies:
 ./install_prereqs.sh
 ```
 
-Or use the Python automation script:
+Or use the Python automation script to have a full installation:
 
 ```bash
-python3 install_prereqs.py
+python3 install_prereqs.py --install-libtorch --libtorch-url <libtorch_archive_url> --install-models
 ```
 
 Optional: install LibTorch automatically into `third_party/libtorch`:
