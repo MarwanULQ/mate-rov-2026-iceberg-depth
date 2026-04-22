@@ -45,50 +45,27 @@ Then install all required dependencies:
 ./install_prereqs.sh
 ```
 
-Or use the Python automation script to have a full installation:
+Or use the Python automation script:
 
 ```bash
-python3 install_prereqs.py --install-libtorch --libtorch-url <libtorch_archive_url> --install-models
+sudo python3 install_prereqs.py
 ```
 
 Optional: install LibTorch automatically into `third_party/libtorch`:
 
 ```bash
-python3 install_prereqs.py --install-libtorch --libtorch-url <libtorch_archive_url>
+sudo python3 install_prereqs.py --install-libtorch --libtorch-url <libtorch_archive_url>
 ```
 
-Optional: download TorchScript model files from Google Drive and place them in `exports/`:
+### 2) Populate the exports directory
 
-```bash
-python3 install_prereqs.py --install-models
-```
-
-If you want to overwrite existing model files in `exports/`:
-
-```bash
-python3 install_prereqs.py --install-models --force-models
-```
-
-### 2) Create and populate the exports directory
-
-Create the model directory in the repository root:
-
-```bash
-mkdir -p exports
-```
-
-Place your TorchScript model there, for example:
+The `exports` directory will be created automatically by the installer. Place your TorchScript model there, for example:
 
 ```text
 exports/stereoanywhere2_torchscript.pt
 ```
-you can find models in [here](https://drive.google.com/drive/folders/1dBQjLkgS8LAILNkJQu6Z3ObolR8X9wC1)
 
-You can also auto-download these model artifacts with:
-
-```bash
-python3 install_prereqs.py --install-models
-```
+You can find models [here](https://drive.google.com/drive/folders/1dBQjLkgS8LAILNkJQu6Z3ObolR8X9wC1).
 
 By default, v4 reads `exports/stereoanywhere2_torchscript.pt`.
 
