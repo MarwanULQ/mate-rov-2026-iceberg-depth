@@ -56,7 +56,7 @@ APT_PACKAGES = [
     "libgstreamer-plugins-base1.0-dev",
 ]
 
-DEFAULT_MODEL_DRIVE_URL = "https://drive.google.com/drive/folders/1dBQjLkgS8LAILNkJQu6Z3ObolR8X9wC1"
+DEFAULT_MODEL_DRIVE_URL = "https://drive.google.com/drive/folders/1GIkdRW8q7gYC1nHk7nBRTk8k4vGhcShg?usp=drive_link"
 MODEL_FILE_SUFFIXES = {".pt", ".pth", ".json"}
 
 
@@ -94,7 +94,8 @@ def install_udev_rule(repo_root: Path, *, dry_run: bool) -> None:
         print(f"Warning: udev script not found at {udev_script}; skipping udev installation.")
         return
 
-    run(["bash", str(udev_script)], cwd=udev_script.parent, dry_run=dry_run)
+    priv = get_priv_prefix()
+    run(priv + ["bash", str(udev_script)], cwd=udev_script.parent, dry_run=dry_run)
 
 
 def _extract_archive(archive_path: Path, out_dir: Path) -> None:

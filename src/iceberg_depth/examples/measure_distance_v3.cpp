@@ -39,9 +39,9 @@
 // <---- Includes
 
 // INPUT SOURCE
-#define USE_LOCAL_VIDEO
+// #define USE_LOCAL_VIDEO
 // #define USE_GSTREAMER_STREAM
-// #define USE_LIVE_ZED_CAMERA
+#define USE_LIVE_ZED_CAMERA
 
 // CALIBRATION SOURCE
 // #define USE_SN_CONF_CALIBRATION

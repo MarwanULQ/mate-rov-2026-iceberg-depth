@@ -48,7 +48,7 @@ Then install all required dependencies:
 Or use the uv Python script:
 
 ```bash
-sudo uv run install_prereqs.py --install-libtorch --libtorch-url <libtorch_archive_url> --install-models
+uv run install_prereqs.py --install-libtorch --libtorch-url <libtorch_archive_url> --install-models
 ```
 
 Optional: install LibTorch automatically into `third_party/libtorch`:
