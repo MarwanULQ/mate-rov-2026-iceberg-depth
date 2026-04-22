@@ -45,21 +45,35 @@ Then install all required dependencies:
 ./install_prereqs.sh
 ```
 
-Or use the Python automation script:
+Or use the uv Python script:
 
 ```bash
-sudo python3 install_prereqs.py
+sudo uv run install_prereqs.py --install-libtorch --libtorch-url <libtorch_archive_url> --install-models
 ```
 
 Optional: install LibTorch automatically into `third_party/libtorch`:
 
 ```bash
-sudo python3 install_prereqs.py --install-libtorch --libtorch-url <libtorch_archive_url>
+uv run install_prereqs.py --install-libtorch --libtorch-url <libtorch_archive_url>
+```
+
+Optional: download model files and place them into `exports/`:
+
+```bash
+uv run install_prereqs.py --install-models
+```
+
+To overwrite existing files in `exports/`:
+
+```bash
+uv run install_prereqs.py --install-models --force-models
 ```
 
 ### 2) Populate the exports directory
 
-The `exports` directory will be created automatically by the installer. Place your TorchScript model there, for example:
+The `exports` directory will be created automatically by the installer. You can either place your TorchScript model manually, or let the installer fetch it using `--install-models`.
+
+Manual example:
 
 ```text
 exports/stereoanywhere2_torchscript.pt
